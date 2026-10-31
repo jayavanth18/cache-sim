@@ -1,0 +1,19 @@
+[timing]
+l1_hit = 1
+l2_hit = 10
+memory = 100
+
+[l1i]
+size = 128
+block_size = 16
+assoc = 2
+
+[l1d]
+size = 128
+block_size = 16
+assoc = 2
+
+[l2]
+size = 512
+block_size = 16
+assoc = 4

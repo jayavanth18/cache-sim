@@ -1,0 +1,27 @@
+# Default hierarchy (sizes in bytes, latencies in cycles)
+
+[timing]
+l1_hit = 1
+l2_hit = 10
+memory = 100
+
+[l1i]
+size = 32768
+block_size = 64
+assoc = 4
+policy = "LRU"
+write_policy = "wb"
+
+[l1d]
+size = 32768
+block_size = 64
+assoc = 4
+policy = "LRU"
+write_policy = "wb"
+
+[l2]
+size = 262144
+block_size = 64
+assoc = 8
+policy = "LRU"
+write_policy = "wb"
