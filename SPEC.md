@@ -42,14 +42,15 @@ LRU, FIFO, Random (fixed seed so runs are repeatable).
 - Writebacks and memory traffic
 - Miss types (3C model): compulsory, capacity, conflict
 
-## Experiments
-1. Cache size vs miss rate
-2. Associativity vs miss rate
-3. Block size vs miss rate and AMAT
-4. Replacement policy comparison
-5. Write-back vs write-through (cycles and memory traffic)
-6. Effect of adding L2 on AMAT
-7. Matrix multiply: loop order (ijk vs ikj) and blocking
+## Experiment settings
+Default hierarchy unless stated. "L1" means L1I and L1D set to the same size.
+1. Size: L1 1-64 KB on random, vecadd, matmul ijk, matmul blocked
+2. Associativity: 1, 2, 4, 8, fully associative on vecadd (32K), strided (32K), matmul ijk (8K); miss rate split into compulsory/capacity/conflict
+3. Block size: 16-256 B on random, vecadd (32K), matmul blocked (4K). Memory latency grows with block size: 60 cycles + 5 cycles per 8 bytes (100 at 64 B)
+4. Replacement: LRU, FIFO, Random (seed 0) on vecadd (2-way, 32K) and the three matmul orders (4-way, 4K)
+5. Write policy: L1D+L2 as WB+WB, WT+WB, WT+WT on vecadd (32K) and matmul (4K). There is no write buffer, so every write-through write stalls the processor
+6. L2: none, 64, 128, 256, 512 KB on sequential, random, vecadd (32K L1D) and matmul ikj (4K L1D)
+7. Matmul: ijk, ikj, blocked (8x8 tiles) with L1 2-32 KB
 
 ## Validation
 Small traces worked out by hand, with unit tests checking the simulator gives the same answers.
@@ -63,3 +64,4 @@ Small traces worked out by hand, with unit tests checking the simulator gives th
   ikj and blocked (8 x 8 tiles). Every order does the same 4 accesses per step.
 Matrix multiply experiments use a 4 KB L1D: with 32 KB the whole of B fits
 and every loop order looks the same.
+
