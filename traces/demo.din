@@ -1,0 +1,15 @@
+# Demo trace for configs/tiny.toml  (0 = read, 1 = write, 2 = instruction fetch)
+# L1: 128 B, 16 B blocks, 2-way -> 4 sets.  L2: 512 B, 4-way.
+# 0x10000000, 0x10000040 and 0x10000080 all map to the same L1 set.
+2 0x00400000
+2 0x00400004
+0 0x10000000
+0 0x10000004
+1 0x10000008
+0 0x10000010
+0 0x10000040
+0 0x10000080
+0 0x10000000
+0 0x10000040
+2 0x00400008
+0 0x10000010
