@@ -107,6 +107,15 @@ class Cache:
     def _block_addr(self, tag, index):
         return ((tag << self.index_bits) | index) << self.offset_bits
 
+    
+    def snapshot(self):
+        """Contents of every set as ((block address, dirty), ...), oldest first.
+        Used by the --state view to show what an access changed."""
+        return tuple(
+            tuple((self._block_addr(tag, index), dirty) for tag, dirty in lines.items())
+            for index, lines in enumerate(self.sets)
+        )
+
     def access(self, addr, is_write=False):
         block = addr >> self.offset_bits
         index = block & (self.num_sets - 1)
