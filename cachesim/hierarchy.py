@@ -8,6 +8,16 @@ MAX_STATE_SETS = 64          # --state only makes sense for small caches
 COLORS = {"green": "\033[32m", "red": "\033[31m", "dim": "\033[2m"}
 RESET = "\033[0m"
 
+# States of the cache controller. In clocked mode every clock cycle is spent
+# in exactly one of these (there is no idle state: the trace has no gaps, so
+# the next access starts in the cycle after the previous one finishes).
+L1_LOOKUP = "L1 lookup"        # tag compare in L1I or L1D
+L2_LOOKUP = "L2 lookup"        # L1 missed, L2 is searched for the block
+L2_WRITE = "L2 write"          # a dirty L1 block or a write-through word goes to L2
+MEM_READ = "memory read"       # a block is fetched from main memory
+MEM_WRITE = "memory write"     # a block or word is written to main memory
+STATES = (L1_LOOKUP, L2_LOOKUP, L2_WRITE, MEM_READ, MEM_WRITE)
+
 
 def paint(text, color, on):
     """Wrap text in an ANSI colour code if colour is switched on."""
@@ -25,7 +35,15 @@ def format_set(entries):
 class Hierarchy:
     """
     Split L1 (instruction + data), optional unified L2, then main memory.
-    Accesses are blocking: the cycle cost of each access is simply added up.
+    Accesses are blocking: one access finishes before the next one starts.
+
+    There are two ways to run a trace, and they always give the same totals:
+      fast     access() adds up the latency of every step of the access
+      clocked  run(clocked=True) also steps a clock one cycle at a time
+               through the controller states of the access (L1 lookup,
+               L2 lookup, memory read, ...), so every single cycle is
+               accounted for. run() raises an error if the clock and the
+               added-up total ever disagree.
     """
 
     def __init__(self, l1i, l1d, l2=None, t_l1=1, t_l2=10, t_mem=100):
@@ -46,18 +64,32 @@ class Hierarchy:
         self.mem_read_bytes = 0
         self.mem_write_bytes = 0
 
+        # clocked mode
+        self.clock = 0                              # clock cycles elapsed
+        self.state_cycles = {s: 0 for s in STATES}  # cycles spent in each state
+        self.phases = None      # steps of the current access: (state, cycles, note)
+
     def caches(self):
         return [c for c in (self.l1i, self.l1d, self.l2) if c is not None]
+
+    def _phase(self, state, cycles, note):
+        """Remember one step of the current access (only used in clocked mode)."""
+        if cycles > 0:
+            self.phases.append((state, cycles, note))
 
     # ---- main memory ----
     def _mem_read(self, nbytes):
         self.mem_reads += 1
         self.mem_read_bytes += nbytes
+        if self.phases is not None:
+            self._phase(MEM_READ, self.t_mem, f"{nbytes} B")
         return self.t_mem
 
     def _mem_write(self, nbytes):
         self.mem_writes += 1
         self.mem_write_bytes += nbytes
+        if self.phases is not None:
+            self._phase(MEM_WRITE, self.t_mem, f"{nbytes} B")
         return self.t_mem
 
     # ---- everything below L1 ----
@@ -66,6 +98,8 @@ class Hierarchy:
         if self.l2 is None:
             return self._mem_read(nbytes), None
         r2 = self.l2.access(addr, False)
+        if self.phases is not None:
+            self._phase(L2_LOOKUP, self.t_l2, "hit" if r2.hit else "miss")
         cycles = self.t_l2
         if r2.fetch:
             cycles += self._mem_read(self.l2.block_size)
@@ -78,7 +112,12 @@ class Hierarchy:
         if self.l2 is None:
             return self._mem_write(nbytes)
         r2 = self.l2.access(addr, True)
+        if self.phases is not None:
+            self._phase(L2_WRITE, self.t_l2, f"dirty block 0x{addr:08x}"
+                        if full_block else "write-through")
         cycles = self.t_l2
+        # an L1 block only overwrites a whole L2 block if L2 blocks are the same size
+        full_block = full_block and nbytes >= self.l2.block_size
         if r2.fetch and not full_block:
             # partial write into an L2 that allocates: fetch the block first
             cycles += self._mem_read(self.l2.block_size)
@@ -98,6 +137,9 @@ class Hierarchy:
         cycles = self.t_l1
         l2_hit = None
         r = l1.access(addr, is_write)
+        if self.phases is not None:
+            self.phases.clear()
+            self._phase(L1_LOOKUP, self.t_l1, "hit" if r.hit else "miss")
 
         if r.fetch:
             extra, l2_hit = self._read_below(addr, l1.block_size)
@@ -111,6 +153,23 @@ class Hierarchy:
         self.total_cycles += cycles
         self.counts[kind] += 1
         return AccessInfo(r.hit, l2_hit, cycles)
+
+    # ---- clocked mode ----
+    def tick(self, state):
+        """One clock cycle passes with the controller in `state`."""
+        self.clock += 1
+        self.state_cycles[state] += 1
+
+    def _clock_access(self, timeline, color):
+        """Step the clock through every cycle of the access that was just made."""
+        for state, cycles, note in self.phases:
+            first = self.clock + 1
+            for _ in range(cycles):
+                self.tick(state)
+            if timeline:
+                when = (f"cycle {first}" if cycles == 1
+                        else f"cycles {first}-{self.clock}")
+                print(" " * 9 + paint(f"{when:<20}{state} ({note})", "dim", color))
 
     def _state_lines(self, before, after, color):
         """Describe every cache set that the last access changed."""
@@ -128,13 +187,20 @@ class Hierarchy:
                 lines.append(" " * 9 + paint(text, "dim", color))
         return lines
 
-    def run(self, trace, verbose=False, state=False, color=False):
+    def run(self, trace, verbose=False, state=False, color=False,
+            clocked=False, timeline=False):
         """
         Feed a trace through the hierarchy.
-        verbose: print one line per access
-        state:   also print every cache set that access changed
-        color:   green hits, red misses (ANSI colours)
+        verbose:  print one line per access
+        state:    also print every cache set that access changed
+        color:    green hits, red misses (ANSI colours)
+        clocked:  step a clock through the trace one cycle at a time
+        timeline: also print the clock cycles of every step (implies clocked)
         """
+        if timeline:
+            clocked = verbose = True
+        if clocked:
+            self.phases = []
         if state:
             for cache in self.caches():
                 if cache.num_sets > MAX_STATE_SETS:
@@ -159,10 +225,18 @@ class Hierarchy:
                                "green" if info.l2_hit else "red", color)
                 print(f"{n:6d}  {names[kind]}  0x{addr:08x}  "
                       f"{l1name} {l1}  L2 {l2}  {info.cycles:4d} cycles")
+            if clocked:
+                self._clock_access(timeline, color)
             if state:
                 after = [c.snapshot() for c in self.caches()]
                 for line in self._state_lines(before, after, color):
                     print(line)
+        if clocked:
+            self.phases = None
+            if self.clock != self.total_cycles:
+                raise RuntimeError(
+                    f"clock ({self.clock} cycles) and added-up latencies "
+                    f"({self.total_cycles} cycles) disagree")
 
     # ---- results ----
     @property
@@ -178,6 +252,8 @@ class Hierarchy:
             "mem_writes": self.mem_writes,
             "mem_read_bytes": self.mem_read_bytes,
             "mem_write_bytes": self.mem_write_bytes,
+            "clock": self.clock,
+            "state_cycles": dict(self.state_cycles),
             "l1i": self.l1i.summary(),
             "l1d": self.l1d.summary(),
             "l2": self.l2.summary() if self.l2 else None,
@@ -207,4 +283,11 @@ class Hierarchy:
             f"Main memory  : {self.mem_reads} reads ({self.mem_read_bytes} bytes), "
             f"{self.mem_writes} writes ({self.mem_write_bytes} bytes)"
         )
+        if self.clock:
+            lines.append("")
+            lines.append(f"Clock        : {self.clock} cycles, stepped one at a "
+                         f"time. Cycles spent in each controller state:")
+            for state in STATES:
+                n = self.state_cycles[state]
+                lines.append(f"  {state:<13}{n:>12}  {100 * n / self.clock:5.1f}%")
         return "\n".join(lines)

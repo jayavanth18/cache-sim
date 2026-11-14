@@ -15,6 +15,12 @@ def main():
     parser.add_argument("--state", action="store_true",
                         help="also show which cache sets each access changed "
                              "(small configs only)")
+    parser.add_argument("--timeline", action="store_true",
+                        help="also show the clock cycles of every step of "
+                             "every access (L1 lookup, L2 lookup, memory read, ...)")
+    parser.add_argument("--fast", action="store_true",
+                        help="add up latencies instead of stepping the clock "
+                             "(same totals, no per-state cycle breakdown)")
     parser.add_argument("--no-color", action="store_true",
                         help="plain text, no green/red")
     args = parser.parse_args()
@@ -24,7 +30,8 @@ def main():
         os.system("")        # switches on ANSI colour support in the Windows console
 
     h = load_hierarchy(args.config)
-    h.run(read_trace(args.trace), verbose=args.verbose, state=args.state, color=color)
+    h.run(read_trace(args.trace), verbose=args.verbose, state=args.state,
+          color=color, clocked=not args.fast, timeline=args.timeline)
     print(h.report())
 
 

@@ -1,14 +1,15 @@
 # Cache Memory Simulator
 
-A trace-driven, cycle-accurate simulator of a two-level cache hierarchy, written in Python. Course project for CS5375 (Computer Systems Organization and Architecture), Fall 2026, Topic 4: Memory Hierarchy Design.
+A trace-driven, cycle-accurate simulator of a two-level cache hierarchy, written in Python. Course project for CS5375 (Computer Systems Organization and Architecture), Fall 2026, project topic 2: Cache memory architecture simulation (cycle accurate).
 
-The simulator reads a memory access trace, runs it through a split L1 cache (instruction + data), a unified L2 cache and main memory, and reports hits, misses, total cycles and average memory access time (AMAT). A step-by-step view shows exactly which cache sets each access changes.
+The simulator reads a memory access trace, runs it through a split L1 cache (instruction + data), a unified L2 cache and main memory, and reports hits, misses, total cycles and average memory access time (AMAT). A clock is stepped one cycle at a time, so every cycle is accounted for and can be printed. A step-by-step view shows exactly which cache sets each access changes.
 
 ## What it models
 - Mapping: direct-mapped, N-way set-associative, fully associative
 - Replacement: LRU, FIFO, Random (seeded, so runs are repeatable)
 - Write policies: write-back with write-allocate, write-through with no-write-allocate
 - Timing: L1 hit 1 cycle, +10 cycles for an L2 hit, +100 cycles for main memory
+- Clock: every access is stepped cycle by cycle through the cache controller states (L1 lookup, L2 lookup, L2 write, memory read, memory write)
 - Miss classification (3C model): compulsory, capacity, conflict
 - Metrics: hit and miss rates per cache, total cycles, AMAT, writebacks, memory traffic
 
@@ -49,6 +50,7 @@ Run all seven experiments (takes several minutes). This writes one CSV file per 
 ```
 python -m cachesim.experiments
 python -m cachesim.experiments --only matmul l2     # just some of them
+python -m cachesim.experiments --fast               # skip the clock (same CSV files, quicker)
 python -m cachesim.plots                            # redraw figures from the CSVs (seconds)
 ```
 
@@ -73,6 +75,50 @@ python -m cachesim --config configs/tiny.toml --trace traces/demo.din --state
 
 Access 8 evicts a dirty block from L1D and writes it into L2 (the extra 10 cycles). Access 9 then misses in L1D but hits in L2. Use `--verbose` for just the per-access lines, and `--no-color` for plain text (hits are green and misses red in a terminal). `--state` only works on small caches (at most 64 sets).
 
+## Cycle accuracy: the clock
+
+The simulator keeps a clock and moves it forward one cycle at a time. In every cycle the cache controller is in exactly one state:
+
+| State | What is happening | Cycles (default) |
+|-------|-------------------|------------------|
+| L1 lookup | tag compare in L1I or L1D | 1 |
+| L2 lookup | L1 missed, L2 is searched | 10 |
+| L2 write | a dirty L1 block (or a write-through word) is written into L2 | 10 |
+| memory read | a block is fetched from main memory | 100 |
+| memory write | a block or word is written to main memory | 100 |
+
+`--timeline` prints the clock cycles of every step:
+
+```
+python -m cachesim --config configs/tiny.toml --trace traces/demo.din --timeline
+```
+
+```
+     8  R  0x10000080  L1D miss  L2 miss   121 cycles
+         cycle 448           L1 lookup (miss)
+         cycles 449-458      L2 lookup (miss)
+         cycles 459-558      memory read (16 B)
+         cycles 559-568      L2 write (dirty block 0x10000000)
+     9  R  0x10000000  L1D miss  L2 hit     11 cycles
+         cycle 569           L1 lookup (miss)
+         cycles 570-579      L2 lookup (hit)
+```
+
+Every run ends with the clock value and the cycles spent in each state:
+
+```
+Clock        : 592 cycles, stepped one at a time. Cycles spent in each controller state:
+  L1 lookup              12    2.0%
+  L2 lookup              70   11.8%
+  L2 write               10    1.7%
+  memory read           500   84.5%
+  memory write            0    0.0%
+```
+
+How it works: what an access does (hit, miss, which block is evicted) is decided when the access starts, and that fixes the list of states it goes through. The clock then ticks through those states one cycle at a time. The caches are blocking, so only one access is in progress at any time and the next one starts in the cycle after the previous one ends.
+
+The simulator also adds up the latency of each access separately, and stops with an error if that total ever differs from the clock. `--fast` skips the clock and only adds up latencies; the totals are the same. All seven experiments run in clocked mode by default.
+
 ## Trace format
 
 One access per line: `<type> <hex address>`, where type is 0 (data read), 1 (data write) or 2 (instruction fetch). Blank lines and `#` comments are ignored.
@@ -86,7 +132,8 @@ Hierarchies are described in TOML files, see `configs/default.toml`. Sizes are i
 ```
 cachesim/
   cache.py         one cache level: mapping, replacement, write policy, 3C counters
-  hierarchy.py     split L1 + L2 + memory, timing model, AMAT, --state view
+  hierarchy.py     split L1 + L2 + memory, timing model, clock, AMAT,
+                   --state and --timeline views
   config.py        builds a hierarchy from a TOML file or a dict
   trace.py         trace file reader
   tracegen.py      deterministic trace generators (sequential, strided, random,
@@ -95,7 +142,7 @@ cachesim/
   plots.py         draws the figures from the CSV files (report and slides themes)
 configs/           default.toml, tiny.toml
 traces/            sample.din, demo.din (the rest is generated)
-tests/             37 tests: unit tests, hand-calculated validation, demo, plots
+tests/             48 tests: unit tests, hand-calculated validation, demo, clock, plots
 results/           CSV files, plus report/ and slides/ figures
 SPEC.md            design specification
 ```
@@ -103,6 +150,8 @@ SPEC.md            design specification
 ## Validation
 
 The tests include results worked out by hand, without using the simulator. For example, a 256 KB array read twice through a 32 KB L1 and 256 KB L2 must give exactly 8192 L1 misses and 622,592 total cycles, and ikj matrix multiply on a 4 KB L1 must give exactly 16,896 misses. The 12-access demo trace is also checked access by access (cycles, evictions, writebacks). See `tests/test_validation.py` and `tests/test_demo.py`.
+
+The clock is checked the same way: the cycles spent in each controller state on the demo trace are counted by hand in `tests/test_clock.py`. In all 114 experiment runs the clock ends on exactly the same cycle count as the added-up latencies.
 
 ## Results
 
@@ -132,7 +181,7 @@ Other findings (details and plots in `results/`):
 - Single in-order core, blocking caches, no overlap between accesses
 - No write buffer, so write-through writes stall for the full latency
 - Write-through sends one 4-byte word (traces carry no access size)
-- A dirty L1 block written back into L2 overwrites a whole block, so an L2 miss on it does not fetch from memory
+- A dirty L1 block written back into L2 overwrites a whole block, so an L2 miss on it does not fetch from memory (if L2 blocks are bigger than L1 blocks, L2 fetches the block first)
 - L2 is neither inclusive nor exclusive
 - Traces are synthetic and deterministic, not captured from real programs
 - Results are validated by hand calculation, not against an independent simulator

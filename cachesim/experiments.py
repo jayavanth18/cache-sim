@@ -5,6 +5,8 @@ into results/. The figures are drawn from those CSV files by plots.py.
     python -m cachesim.experiments                  # all experiments
     python -m cachesim.experiments --only size l2   # just some of them
     python -m cachesim.experiments --no-plots       # CSV files only
+    python -m cachesim.experiments --fast           # add up latencies instead of
+                                                    # stepping the clock (same CSVs)
 
 Generate the traces first:  python -m cachesim.tracegen
 """
@@ -20,6 +22,7 @@ from .trace import read_trace
 KB = 1024
 TRACE_DIR = Path("traces")
 RESULT_DIR = Path("results")
+CLOCKED = True         # step the clock cycle by cycle; --fast switches it off
 
 
 # ---------------------------------------------------------------- helpers
@@ -50,7 +53,8 @@ def mem_latency(block):
 def run_one(trace, cfg):
     """Run one trace through one configuration and collect the numbers."""
     h = build_hierarchy(cfg)
-    h.run(read_trace(TRACE_DIR / f"{trace}.din"))
+    # In clocked mode run() checks that the clock agrees with total_cycles.
+    h.run(read_trace(TRACE_DIR / f"{trace}.din"), clocked=CLOCKED)
     s = h.summary()
     d = s["l1d"]
     l2 = s["l2"]
@@ -177,7 +181,13 @@ def main():
                         help="run only these experiments")
     parser.add_argument("--no-plots", action="store_true",
                         help="write the CSV files but don't draw figures")
+    parser.add_argument("--fast", action="store_true",
+                        help="add up latencies instead of stepping the clock "
+                             "(quicker, gives exactly the same CSV files)")
     args = parser.parse_args()
+
+    global CLOCKED
+    CLOCKED = not args.fast
 
     if not (TRACE_DIR / "matmul_ikj.din").exists():
         sys.exit("Traces not found. Run:  python -m cachesim.tracegen")
